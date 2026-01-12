@@ -1,67 +1,69 @@
-import pickle
+import streamlit as st
 import pandas as pd
 import numpy as np
-from fastapi import FastAPI, Request, Form
-from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse
-import uvicorn
+import pickle
 import os
 
-app = FastAPI()
-templates = Jinja2Templates(directory="templates")
+# 1. Page Setup
+st.set_page_config(page_title="Salary Predictor", layout="centered")
 
-# --- LOAD THE ARTIFACTS ---
-# We load the model, scaler, and feature list you just sent.
-file_path = "model/salary_model_artifacts.pkl"
+st.title("💰 Data Science Salary Predictor")
+st.write("Enter your details below to estimate your salary.")
 
-if os.path.exists(file_path):
-    with open(file_path, "rb") as f:
-        artifacts = pickle.load(f)
+# 2. Load the Model Assets
+@st.cache_resource
+def load_artifacts():
+    file_path = "model/salary_model_artifacts.pkl"
+    if os.path.exists(file_path):
+        with open(file_path, "rb") as f:
+            return pickle.load(f)
+    return None
+
+artifacts = load_artifacts()
+
+# Stop if model is missing
+if artifacts is None:
+    st.error("❌ Error: 'salary_model_artifacts.pkl' not found in 'model/' folder.")
+    st.stop()
+
+model = artifacts["model"]
+scaler = artifacts["scaler"]
+feature_names = artifacts["features"]
+
+# 3. Input Form (UI)
+with st.form("prediction_form"):
+    col1, col2 = st.columns(2)
     
-    model = artifacts["model"]
-    scaler = artifacts["scaler"]
-    feature_names = artifacts["features"]
-    print(f"✅ Success! Loaded {len(feature_names)} features.")
-else:
-    print(f"❌ Error: File not found at {file_path}")
-    model, scaler, feature_names = None, None, []
+    with col1:
+        work_year = st.number_input("Work Year", min_value=2020, max_value=2030, value=2024)
+        experience_level = st.selectbox("Experience Level", ["EN", "MI", "SE", "EX"], 
+                                      format_func=lambda x: {"EN": "Entry Level", "MI": "Mid Level", "SE": "Senior Level", "EX": "Executive"}[x])
+        employment_type = st.selectbox("Employment Type", ["FT", "PT", "CT", "FL"], 
+                                     format_func=lambda x: {"FT": "Full Time", "PT": "Part Time", "CT": "Contract", "FL": "Freelance"}[x])
+        job_title = st.text_input("Job Title", "Data Scientist")
 
-# --- ROUTES ---
+    with col2:
+        employee_residence = st.text_input("Employee Residence (ISO Code)", "US")
+        remote_ratio = st.selectbox("Remote Ratio", [0, 50, 100], 
+                                  format_func=lambda x: {0: "On-Site", 50: "Hybrid", 100: "Remote"}[x])
+        company_location = st.text_input("Company Location (ISO Code)", "US")
+        company_size = st.selectbox("Company Size", ["S", "M", "L"], 
+                                  format_func=lambda x: {"S": "Small", "M": "Medium", "L": "Large"}[x])
 
-@app.get("/", response_class=HTMLResponse)
-async def read_root(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    # Submit Button
+    submitted = st.form_submit_button("Predict Salary")
 
-@app.post("/predict", response_class=HTMLResponse)
-async def predict(
-    request: Request,
-    work_year: int = Form(...),
-    experience_level: str = Form(...),
-    employment_type: str = Form(...),
-    job_title: str = Form(...),
-    employee_residence: str = Form(...),
-    remote_ratio: int = Form(...),
-    company_location: str = Form(...),
-    company_size: str = Form(...)
-):
-    if model is None:
-        return templates.TemplateResponse("index.html", {
-            "request": request,
-            "error_message": "Model file not found. Please check the 'model' folder."
-        })
-
+# 4. Prediction Logic (Runs only when button is clicked)
+if submitted:
     try:
-        # 1. Prepare input dictionary with all 577 features set to 0
+        # Initialize all 577 features to 0
         input_dict = {col: 0 for col in feature_names}
 
-        # 2. Assign Numerical Values
+        # Set Numerical Values
         input_dict['work_year'] = work_year
         input_dict['remote_ratio'] = remote_ratio
 
-        # 3. Assign Categorical Values (One-Hot Encoding)
-        # We manually construct the column name (e.g., "experience_level_SE")
-        # and set it to 1 if it exists in our feature list.
-        
+        # Set Categorical Values (One-Hot Encoding Logic)
         categories = [
             ('experience_level', experience_level),
             ('employment_type', employment_type),
@@ -75,35 +77,20 @@ async def predict(
             col_name = f"{prefix}_{value}"
             if col_name in input_dict:
                 input_dict[col_name] = 1
-            # Note: If the column isn't found, it usually means it was dropped 
-            # during training to avoid dummy variable trap, or the input value is new.
+            # If col_name not found, it's ignored (handled by base case)
 
-        # 4. Convert to DataFrame and align columns
+        # Create DataFrame & Scale
         input_df = pd.DataFrame([input_dict])
+        input_df = input_df[feature_names]  # Strict column ordering
         
-        # vital: ensure columns are in the exact same order as training
-        input_df = input_df[feature_names]
-
-        # 5. Scale the input
         input_scaled = scaler.transform(input_df)
 
-        # 6. Predict
+        # Predict
         prediction = model.predict(input_scaled)
-        
-        # 7. Format Result
-        salary_value = round(prediction[0], 2)
-        formatted_salary = f"${salary_value:,.2f}"
+        salary = prediction[0]
 
-        return templates.TemplateResponse("index.html", {
-            "request": request,
-            "prediction_text": f"Estimated Salary: {formatted_salary}"
-        })
+        # Show Result
+        st.success(f"### 💵 Estimated Salary: ${salary:,.2f}")
 
     except Exception as e:
-        return templates.TemplateResponse("index.html", {
-            "request": request,
-            "error_message": f"Prediction Failed: {str(e)}"
-        })
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+        st.error(f"An error occurred: {e}")
